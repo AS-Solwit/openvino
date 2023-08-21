@@ -437,6 +437,25 @@ void remove_redundant_reorders::run(program& p) {
                     input.add_fused_primitive(local_desc);
                 }
 
+                // Need to update the data-type of primitive.
+                //
+                // At remove_redundant_reorders pass, the reorder that converts from f32 to f16 is fused to the concat.
+                //   It updates dt of node to f16 only. No update primitive dt(f32).
+                // -  Before,        const_data -> ... -> concat(prim:f32, node:f32) -> reorder(prim:f16, node:f16) -> ... -> permuteA1(prim:f32, node:f16)
+                // -  After fusing,  const_data -> ... -> concat(prim:f32, node:f16) -> ... -> permuteA1(prim:f32, node:f16)
+                // At propagate_constants pass, it creates some sub-graphs to calculate the propagated nodes.
+                //   In sub_graph, the data-type of concat will be f32 because the data-type of primitive is f32.
+                //   The finally created data has the f32 data-type, and when replaced with the main-graph node,
+                //   output_data_type is f16 and memory_impl is f32, and miss-matching occurs.
+                // -  sub-graph      const_data -> ... -> concat(prim:f32, node:f32) -> ... -> permuteA2(prim:f32, node:f32)
+                // -  main-graph     REPLACE [ const_data -> ... -> concat(prim:f32, node:f16) -> ... -> permuteA1(prim:f32, node:f16) ] to [ permuteA2(prim:f32, node:f16) ]
+                //
+                if (input.is_type<concatenation>()) {
+                    auto output_layout = input.get_output_layout();
+                    auto prim = std::const_pointer_cast<primitive>(input.get_primitive());
+                    prim->output_data_types = {optional_data_type{output_layout.data_type}};
+                }
+
                 node.can_be_optimized(true);
                 p.add_optimized_primitive_info(node.id());
 
